@@ -13,7 +13,7 @@ See README for more details
 
 */
 
-package main
+package guerrilla
 
 import (
 	"bufio"
@@ -117,24 +117,4 @@ func runServer(sConfig ServerConfig) (err error) {
 		})
 		clientId++
 	}
-}
-
-func main() {
-	readConfig()
-	initialise()
-	if err := testDbConnections(); err != nil {
-		fmt.Println(err)
-		os.Exit(1);
-	}
-	// start some savemail workers
-	for i := 0; i < mainConfig.Save_workers_size; i++ {
-		go saveMail()
-	}
-	// run our servers
-	for serverId := 0; serverId < len(mainConfig.Servers); serverId++ {
-		if mainConfig.Servers[serverId].Is_enabled {
-			go runServer(mainConfig.Servers[serverId])
-		}
-	}
-	sigHandler()
 }
