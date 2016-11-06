@@ -10,29 +10,31 @@ import (
 // Backend accepts the recieved messages, and store/deliver/process them
 type Backend interface {
 	Initialize(BackendConfig) error
+	Process(client *Client, user, host string) string
 }
 
 const CommandMaxLength = 1024
 
+// TODO: cleanup
 type Client struct {
-	state       int
-	helo        string
-	mail_from   string
-	rcpt_to     string
-	response    string
-	address     string
-	data        string
-	subject     string
-	hash        string
-	time        int64
-	tls_on      bool
-	conn        net.Conn
-	bufin       *SMTPBufferedReader
-	bufout      *bufio.Writer
-	kill_time   int64
-	errors      int
-	clientId    int64
-	savedNotify chan int
+	State       int
+	Helo        string
+	MailFrom    string
+	RcptTo      string
+	Response    string
+	Address     string
+	Data        string
+	Subject     string
+	Hash        string
+	Time        int64
+	TLS         bool
+	Conn        net.Conn
+	Bufin       *SMTPBufferedReader
+	Bufout      *bufio.Writer
+	KillTime    int64
+	Errors      int
+	ClientID    int64
+	SavedNotify chan int
 }
 
 var InputLimitExceeded = errors.New("Line too long") // 500 Line too long.
@@ -73,7 +75,7 @@ type SMTPBufferedReader struct {
 }
 
 // delegate to the adjustable limited reader
-func (sbr *SMTPBufferedReader) setLimit(n int64) {
+func (sbr *SMTPBufferedReader) SetLimit(n int64) {
 	sbr.alr.setLimit(n)
 }
 

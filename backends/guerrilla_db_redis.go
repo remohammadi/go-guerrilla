@@ -2,7 +2,6 @@ package backends
 
 import (
 	"fmt"
-	"strconv"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
@@ -12,6 +11,7 @@ import (
 	_ "github.com/ziutek/mymysql/godrv"
 
 	guerrilla "github.com/flashmob/go-guerrilla"
+	"github.com/flashmob/go-guerrilla/util"
 )
 
 func init() {
@@ -51,8 +51,28 @@ func (g *GuerrillaDBAndRedisBackend) Initialize(backendConfig guerrilla.BackendC
 	return nil
 }
 
+func (g *GuerrillaDBAndRedisBackend) Process(client *guerrilla.Client, user, host string) string {
+	// to do: timeout when adding to SaveMailChan
+	// place on the channel so that one of the save mail workers can pick it up
+	SaveMailChan <- &savePayload{client: client, user: user, host: host}
+	// wait for the save to complete
+	// or timeout
+	select {
+	case status := <-client.SavedNotify:
+		if status == 1 {
+			return fmt.Sprintf("250 OK : queued as %s", client.Hash)
+		}
+		return "554 Error: transaction failed, blame it on the weather"
+	case <-time.After(time.Second * 30):
+		log.Debug("timeout")
+		return "554 Error: transaction timeout"
+	}
+}
+
 type savePayload struct {
 	client *guerrilla.Client
+	user   string
+	host   string
 }
 
 var SaveMailChan chan *savePayload
@@ -94,75 +114,67 @@ func (g *GuerrillaDBAndRedisBackend) saveMail() {
 	//  receives values from the channel repeatedly until it is closed.
 	for {
 		payload := <-SaveMailChan
-		if user, host, addr_err := validateEmailData(payload.client); addr_err != nil {
-			payload.server.logln(1, fmt.Sprintf("mail_from didnt validate: %v", addr_err)+" client.mail_from:"+payload.client.mail_from)
-			// notify client that a save completed, -1 = error
-			payload.client.savedNotify <- -1
-			continue
-		} else {
-			recipient = user + "@" + host
-			to = user + "@" + g.config.PrimaryHost
-		}
-		length = len(payload.client.data)
-		ts := strconv.FormatInt(time.Now().UnixNano(), 10)
-		payload.client.subject = mimeHeaderDecode(payload.client.subject)
-		payload.client.hash = md5hex(
+		recipient = payload.user + "@" + payload.host
+		to = payload.user + "@" + g.config.PrimaryHost
+		length = len(payload.client.Data)
+		ts := fmt.Sprintf("%d", time.Now().UnixNano())
+		payload.client.Subject = util.MimeHeaderDecode(payload.client.Subject)
+		payload.client.Hash = util.MD5Hex(
 			&to,
-			&payload.client.mail_from,
-			&payload.client.subject,
+			&payload.client.MailFrom,
+			&payload.client.Subject,
 			&ts)
 		// Add extra headers
-		add_head := ""
-		add_head += "Delivered-To: " + to + "\r\n"
-		add_head += "Received: from " + payload.client.helo + " (" + payload.client.helo + "  [" + payload.client.address + "])\r\n"
-		add_head += "	by " + payload.server.Config.Host_name + " with SMTP id " + payload.client.hash + "@" +
-			payload.server.Config.Host_name + ";\r\n"
-		add_head += "	" + time.Now().Format(time.RFC1123Z) + "\r\n"
+		var addHead string
+		addHead += "Delivered-To: " + to + "\r\n"
+		addHead += "Received: from " + payload.client.Helo + " (" + payload.client.Helo + "  [" + payload.client.Address + "])\r\n"
+		addHead += "	by " + payload.host + " with SMTP id " + payload.client.Hash + "@" + payload.host + ";\r\n"
+		addHead += "	" + time.Now().Format(time.RFC1123Z) + "\r\n"
 		// compress to save space
-		payload.client.data = compress(&add_head, &payload.client.data)
+		payload.client.Data = util.Compress(&addHead, &payload.client.Data)
 		body = "gzencode"
-		redisErr = redisClient.redisConnection()
+		redisErr = redisClient.redisConnection(g.config.RedisInterface)
 		if redisErr == nil {
-			_, do_err := redisClient.conn.Do("SETEX", payload.client.hash, mainConfig.RedisExpireSeconds, payload.client.data)
-			if do_err == nil {
-				payload.client.data = ""
+			_, doErr := redisClient.conn.Do("SETEX", payload.client.Hash, g.config.RedisExpireSeconds, payload.client.Data)
+			if doErr == nil {
+				payload.client.Data = ""
 				body = "redis"
 			}
 		} else {
-			payload.server.logln(1, fmt.Sprintf("redis: %v", redisErr))
+			log.WithError(redisErr).Warn("Error while SETEX on redis")
 		}
 		// bind data to cursor
 		ins.Bind(
 			to,
-			payload.client.mail_from,
-			payload.client.subject,
+			payload.client.MailFrom,
+			payload.client.Subject,
 			body,
-			payload.client.data,
-			payload.client.hash,
+			payload.client.Data,
+			payload.client.Hash,
 			recipient,
-			payload.client.address,
-			payload.client.mail_from,
-			payload.client.tls_on,
+			payload.client.Address,
+			payload.client.MailFrom,
+			payload.client.TLS,
 		)
 		// save, discard result
 		_, _, err = ins.Exec()
 		if err != nil {
-			payload.server.logln(1, fmt.Sprintf("Database error, %v ", err))
-			payload.client.savedNotify <- -1
+			log.WithError(err).Warn("Database error while inster")
+			payload.client.SavedNotify <- -1
 		} else {
-			payload.server.logln(0, "Email saved "+payload.client.hash+" len:"+strconv.Itoa(length))
+			log.Debugf("Email saved %s (len=%d)", payload.client.Hash, length)
 			_, _, err = incr.Exec()
 			if err != nil {
-				payload.server.logln(1, fmt.Sprintf("Failed to incr count: %v", err))
+				log.WithError(err).Warn("Database error while incr count")
 			}
-			payload.client.savedNotify <- 1
+			payload.client.SavedNotify <- 1
 		}
 	}
 }
 
-func (c *redisClient) redisConnection() (err error) {
+func (c *redisClient) redisConnection(redisInterface string) (err error) {
 	if c.count == 0 {
-		c.conn, err = redis.Dial("tcp", mainConfig.RedisInterface)
+		c.conn, err = redis.Dial("tcp", redisInterface)
 		if err != nil {
 			// handle error
 			return err
@@ -188,7 +200,7 @@ func (g *GuerrillaDBAndRedisBackend) testDbConnections() (err error) {
 	}
 
 	redisClient := &redisClient{}
-	if redisErr := redisClient.redisConnection(); redisErr != nil {
+	if redisErr := redisClient.redisConnection(g.config.RedisInterface); redisErr != nil {
 		err = fmt.Errorf("Redis cannot connect, check your settings: %s", redisErr)
 	}
 

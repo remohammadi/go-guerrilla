@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"time"
@@ -22,13 +23,13 @@ func ReadConfig(configFile, iface string, verbose bool, mainConfig *guerrilla.Co
 		return fmt.Errorf("could not parse config file: %s", err)
 	}
 
+	if len(mainConfig.AllowedHosts) == 0 {
+		return errors.New("empty AllowedHosts is not allowed")
+	}
+
 	// TODO: deprecate
 	if len(iface) > 0 && len(mainConfig.Servers) > 0 {
-		mainConfig.Servers[0].Listen_interface = iface
-	}
-	// TODO: deprecate
-	if verbose {
-		mainConfig.Verbose = true
+		mainConfig.Servers[0].ListenInterface = iface
 	}
 
 	guerrilla.ConfigLoadTime = time.Now()

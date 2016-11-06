@@ -3,15 +3,17 @@ package main
 import (
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/spf13/cobra"
 
+	"fmt"
+
 	guerrilla "github.com/flashmob/go-guerrilla"
 	"github.com/flashmob/go-guerrilla/backends"
 	"github.com/flashmob/go-guerrilla/config"
+	"github.com/flashmob/go-guerrilla/server"
 )
 
 var (
@@ -34,7 +36,7 @@ func init() {
 		"Interface and port to listen on, eg. 127.0.0.1:2525 ")
 	serveCmd.PersistentFlags().StringVarP(&configFile, "config", "c",
 		"goguerrilla.conf", "Path to the configuration file")
-	serveCmd.PersistentFlags().StringVarP(&configFile, "pidFile", "p",
+	serveCmd.PersistentFlags().StringVarP(&pidFile, "pidFile", "p",
 		"/var/run/go-guerrilla.pid", "Path to the pid file")
 
 	rootCmd.AddCommand(serveCmd)
@@ -48,7 +50,7 @@ func sigHandler() {
 		if sig == syscall.SIGHUP {
 			err := config.ReadConfig(configFile, iface, verbose, &mainConfig)
 			if err != nil {
-				log.WithError(err).Error("Error while reloading")
+				log.WithError(err).Error("Error while ReadConfig (reload)")
 			} else {
 				log.Infof("Configuration is reloaded at %s", guerrilla.ConfigLoadTime)
 			}
@@ -60,16 +62,24 @@ func sigHandler() {
 }
 
 func serve(cmd *cobra.Command, args []string) {
+	logVersion()
+
 	err := config.ReadConfig(configFile, iface, verbose, &mainConfig)
 	if err != nil {
-		log.WithError(err).Fatal("Error while reloading")
+		log.WithError(err).Fatal("Error while ReadConfig")
 	}
 
 	// write out our PID
-	if f, err := os.Create(pidFile); err == nil {
-		defer f.Close()
-		if _, err := f.WriteString(strconv.Itoa(os.Getpid())); err == nil {
-			f.Sync()
+	if len(pidFile) > 0 {
+		if f, err := os.Create(pidFile); err == nil {
+			defer f.Close()
+			if _, err := f.WriteString(fmt.Sprintf("%d", os.Getpid())); err == nil {
+				f.Sync()
+			} else {
+				log.WithError(err).Fatalf("Error while writing pidFile (%s)", pidFile)
+			}
+		} else {
+			log.WithError(err).Fatalf("Error while creating pidFile (%s)", pidFile)
 		}
 	}
 
@@ -82,7 +92,13 @@ func serve(cmd *cobra.Command, args []string) {
 	// run our servers
 	for _, serverConfig := range mainConfig.Servers {
 		if serverConfig.IsEnabled {
-			go server.RunServer(serverConfig, backend)
+			log.Infof("Starting server on %s", serverConfig.ListenInterface)
+			go func(sConfig guerrilla.ServerConfig) {
+				err := server.RunServer(sConfig, backend, mainConfig.AllowedHosts)
+				if err != nil {
+					log.WithError(err).Fatalf("Error while starting server on %s", serverConfig.ListenInterface)
+				}
+			}(serverConfig)
 		}
 	}
 

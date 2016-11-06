@@ -10,7 +10,7 @@ import (
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version info",
-	Long:  `All software has versions. This is Guerrilla's`,
+	Long:  `Every software has a version. This is Guerrilla's`,
 	Run: func(cmd *cobra.Command, args []string) {
 		logVersion()
 	},
@@ -23,5 +23,5 @@ func init() {
 func logVersion() {
 	log.Infof("guerrillad %s", guerrilla.Version)
 	log.Debugf("Build Time: %s", guerrilla.BuildTime)
-	log.Debugf("Commit:     %s", guerrilla.BuildTime)
+	log.Debugf("Commit:     %s", guerrilla.Commit)
 }
