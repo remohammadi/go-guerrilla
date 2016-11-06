@@ -1,22 +1,60 @@
-package guerrilla
+package backends
 
 import (
 	"fmt"
-	"github.com/garyburd/redigo/redis"
-	"github.com/ziutek/mymysql/autorc"
-	_ "github.com/ziutek/mymysql/godrv"
 	"log"
 	"strconv"
 	"time"
-	"errors"
+
+	"github.com/garyburd/redigo/redis"
+	"github.com/ziutek/mymysql/autorc"
+	_ "github.com/ziutek/mymysql/godrv"
+
+	guerrilla "github.com/flashmob/go-guerrilla"
 )
 
-type savePayload struct {
-	client *Client
-	server *SmtpdServer
+func init() {
+	backends["guerrilla-db-redis"] = &GuerrillaDBAndRedisBackend{}
 }
 
-var SaveMailChan chan *savePayload // workers for saving mail
+type GuerrillaDBAndRedisBackend struct {
+	config guerrillaDBAndRedisConfig
+}
+
+type guerrillaDBAndRedisConfig struct {
+	NumberOfWorkers    int    `json:"save_workers_size"`
+	MysqlTable         string `json:"mail_table"`
+	MysqlDB            string `json:"mysql_db"`
+	MysqlHost          string `json:"mysql_host"`
+	MysqlPass          string `json:"mysql_pass"`
+	MysqlUser          string `json:"mysql_user"`
+	RedisExpireSeconds int    `json:"redis_expire_seconds"`
+	RedisInterface     string `json:"redis_interface"`
+	PrimaryHost        string `json:"primary_mail_host"`
+}
+
+func (g *GuerrillaDBAndRedisBackend) Initialize(backendConfig guerrilla.BackendConfig) error {
+	// TODO: load config
+
+	if err := g.testDbConnections(); err != nil {
+		return err
+	}
+
+	SaveMailChan = make(chan *savePayload, g.config.NumberOfWorkers)
+
+	// start some savemail workers
+	for i := 0; i < g.config.NumberOfWorkers; i++ {
+		go g.saveMail()
+	}
+
+	return nil
+}
+
+type savePayload struct {
+	client *guerrilla.Client
+}
+
+var SaveMailChan chan *savePayload
 
 type redisClient struct {
 	count int
@@ -24,7 +62,7 @@ type redisClient struct {
 	time  int
 }
 
-func saveMail() {
+func (g *GuerrillaDBAndRedisBackend) saveMail() {
 	var to, recipient, body string
 	var err error
 
@@ -34,12 +72,12 @@ func saveMail() {
 	db := autorc.New(
 		"tcp",
 		"",
-		mainConfig.Mysql_host,
-		mainConfig.Mysql_user,
-		mainConfig.Mysql_pass,
-		mainConfig.Mysql_db)
+		g.config.MysqlHost,
+		g.config.MysqlUser,
+		g.config.MysqlPass,
+		g.config.MysqlDB)
 	db.Register("set names utf8")
-	sql := "INSERT INTO " + mainConfig.Mysql_table + " "
+	sql := "INSERT INTO " + g.config.MysqlTable + " "
 	sql += "(`date`, `to`, `from`, `subject`, `body`, `charset`, `mail`, `spam_score`, `hash`, `content_type`, `recipient`, `has_attach`, `ip_addr`, `return_path`, `is_tls`)"
 	sql += " values (NOW(), ?, ?, ?, ? , 'UTF-8' , ?, 0, ?, '', ?, 0, ?, ?, ?)"
 	ins, sql_err := db.Prepare(sql)
@@ -62,10 +100,10 @@ func saveMail() {
 			continue
 		} else {
 			recipient = user + "@" + host
-			to = user + "@" + mainConfig.Primary_host
+			to = user + "@" + g.config.PrimaryHost
 		}
 		length = len(payload.client.data)
-		ts := strconv.FormatInt(time.Now().UnixNano(), 10);
+		ts := strconv.FormatInt(time.Now().UnixNano(), 10)
 		payload.client.subject = mimeHeaderDecode(payload.client.subject)
 		payload.client.hash = md5hex(
 			&to,
@@ -84,7 +122,7 @@ func saveMail() {
 		body = "gzencode"
 		redis_err = redisClient.redisConnection()
 		if redis_err == nil {
-			_, do_err := redisClient.conn.Do("SETEX", payload.client.hash, mainConfig.Redis_expire_seconds, payload.client.data)
+			_, do_err := redisClient.conn.Do("SETEX", payload.client.hash, mainConfig.RedisExpireSeconds, payload.client.data)
 			if do_err == nil {
 				payload.client.data = ""
 				body = "redis"
@@ -124,7 +162,7 @@ func saveMail() {
 func (c *redisClient) redisConnection() (err error) {
 
 	if c.count == 0 {
-		c.conn, err = redis.Dial("tcp", mainConfig.Redis_interface)
+		c.conn, err = redis.Dial("tcp", mainConfig.RedisInterface)
 		if err != nil {
 			// handle error
 			return err
@@ -134,25 +172,25 @@ func (c *redisClient) redisConnection() (err error) {
 }
 
 // test database connection settings
-func testDbConnections() (err error) {
+func (g *GuerrillaDBAndRedisBackend) testDbConnections() (err error) {
 
 	db := autorc.New(
 		"tcp",
 		"",
-		mainConfig.Mysql_host,
-		mainConfig.Mysql_user,
-		mainConfig.Mysql_pass,
-		mainConfig.Mysql_db)
+		g.config.MysqlHost,
+		g.config.MysqlUser,
+		g.config.MysqlPass,
+		g.config.MysqlDB)
 
-	if mysql_err := db.Raw.Connect(); mysql_err != nil {
-		err = errors.New("MySql cannot connect, check your settings. " + mysql_err.Error() )
+	if mysqlErr := db.Raw.Connect(); mysqlErr != nil {
+		err = fmt.Errorf("MySql cannot connect, check your settings: %s", mysqlErr)
 	} else {
-		db.Raw.Close();
+		db.Raw.Close()
 	}
 
 	redisClient := &redisClient{}
-	if redis_err := redisClient.redisConnection(); redis_err != nil {
-		err = errors.New("Redis cannot connect, check your settings. " + redis_err.Error())
+	if redisErr := redisClient.redisConnection(); redisErr != nil {
+		err = fmt.Errorf("Redis cannot connect, check your settings: %s", redisErr)
 	}
 
 	return

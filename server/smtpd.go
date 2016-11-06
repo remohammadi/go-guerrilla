@@ -1,4 +1,4 @@
-package guerrilla
+package server
 
 import (
 	"bufio"
@@ -13,30 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	guerrilla "github.com/flashmob/go-guerrilla"
 )
-
-const commandMaxLength = 1024
-
-type Client struct {
-	state       int
-	helo        string
-	mail_from   string
-	rcpt_to     string
-	response    string
-	address     string
-	data        string
-	subject     string
-	hash        string
-	time        int64
-	tls_on      bool
-	conn        net.Conn
-	bufin       *smtpBufferedReader
-	bufout      *bufio.Writer
-	kill_time   int64
-	errors      int
-	clientId    int64
-	savedNotify chan int
-}
 
 type SmtpdServer struct {
 	tlsConfig    *tls.Config
@@ -44,12 +23,11 @@ type SmtpdServer struct {
 	timeout      time.Duration
 	allowedHosts map[string]bool
 	sem          chan int // currently active client list
-	Config       ServerConfig
+	Config       guerrilla.ServerConfig
 	logger       *log.Logger
 }
 
 func (server *SmtpdServer) logln(level int, s string) {
-
 	if mainConfig.Verbose {
 		fmt.Println(s)
 	}
@@ -61,11 +39,9 @@ func (server *SmtpdServer) logln(level int, s string) {
 	if level == 1 && len(server.Config.Log_file) > 0 {
 		server.logger.Println(s)
 	}
-
 }
 
 func (server *SmtpdServer) openLog() {
-
 	server.logger = log.New(&bytes.Buffer{}, "", log.Lshortfile)
 	// custom log file
 	if len(server.Config.Log_file) > 0 {
@@ -122,7 +98,7 @@ func (server *SmtpdServer) handleClient(client *Client) {
 			responseAdd(client, greeting)
 			client.state = 1
 		case 1:
-			client.bufin.setLimit(commandMaxLength)
+			client.bufin.setLimit(guerrilla.CommandMaxLength)
 			input, err := server.readSmtp(client)
 			if err != nil {
 				if err == io.EOF {
@@ -133,7 +109,7 @@ func (server *SmtpdServer) handleClient(client *Client) {
 					// too slow, timeout
 					server.logln(0, fmt.Sprintf("%s: %v", client.address, err))
 					return
-				} else if err == INPUT_LIMIT_EXCEEDED {
+				} else if err == guerrilla.InputLimitExceeded {
 					responseAdd(client, "500 Line too long.")
 					// kill it so that another one can connect
 					killClient(client)
@@ -235,7 +211,7 @@ func (server *SmtpdServer) handleClient(client *Client) {
 				}
 
 			} else {
-				if (err == INPUT_LIMIT_EXCEEDED) {
+				if err == guerrilla.InputLimitExceeded {
 					// hard limit reached, end to make room for other clients
 					responseAdd(client, "550 Error: DATA limit exceeded by more than a megabyte!")
 					killClient(client)
@@ -282,57 +258,6 @@ func (server *SmtpdServer) closeClient(client *Client) {
 }
 func killClient(client *Client) {
 	client.kill_time = time.Now().Unix()
-}
-
-var INPUT_LIMIT_EXCEEDED = errors.New("Line too long") // 500 Line too long.
-
-// we need to adjust the limit, so we embed io.LimitedReader
-type adjustableLimitedReader struct {
-	R *io.LimitedReader
-}
-
-// bolt this on so we can adjust the limit
-func (alr *adjustableLimitedReader) setLimit(n int64) {
-	alr.R.N = n
-}
-
-// this just delegates to the underlying reader in order to satisfy the Reader interface
-// Since the vanilla limited reader returns io.EOF when the limit is reached, we need a more specific
-// error so that we can distinguish when a limit is reached
-func (alr *adjustableLimitedReader) Read(p []byte) (n int, err error) {
-	n, err = alr.R.Read(p)
-	if err == io.EOF && alr.R.N <= 0 {
-		// return our custom error since std lib returns EOF
-		err = INPUT_LIMIT_EXCEEDED
-	}
-	return
-}
-
-// allocate a new adjustableLimitedReader
-func newAdjustableLimitedReader(r io.Reader, n int64) *adjustableLimitedReader {
-	lr := &io.LimitedReader{R: r, N: n}
-	return &adjustableLimitedReader{lr}
-}
-
-// This is a bufio.Reader what will use our adjustable limit reader
-// We 'extend' buffio to have the limited reader feature
-type smtpBufferedReader struct {
-	*bufio.Reader
-	alr *adjustableLimitedReader
-}
-
-
-// delegate to the adjustable limited reader
-func (sbr *smtpBufferedReader) setLimit(n int64) {
-	sbr.alr.setLimit(n)
-}
-
-
-// allocate a new smtpBufferedReader
-func newSmtpBufferedReader(rd io.Reader) *smtpBufferedReader {
-	alr := newAdjustableLimitedReader(rd, commandMaxLength)
-	s := &smtpBufferedReader{bufio.NewReader(alr), alr}
-	return s
 }
 
 // Reads from the smtpBufferedReader, can be in command state or data state.

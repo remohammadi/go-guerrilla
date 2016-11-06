@@ -9,11 +9,9 @@ Repository: https://github.com/flashmob/Go-Guerrilla-SMTPd
 Site: http://www.guerrillamail.com/
 
 See README for more details
-
-
 */
 
-package guerrilla
+package server
 
 import (
 	"bufio"
@@ -21,57 +19,35 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
-	"os"
-	"os/signal"
 	"runtime"
 	"strconv"
-	"syscall"
 	"time"
 )
 
 var allowedHosts = make(map[string]bool, 15)
 
+// // map the allow hosts for easy lookup
+// if len(mainConfig.Allowed_hosts) > 0 {
+// 	if arr := strings.Split(mainConfig.Allowed_hosts, ","); len(arr) > 0 {
+// 		for i := 0; i < len(arr); i++ {
+// 			allowedHosts[arr[i]] = true
+// 		}
+// 	}
+// } else {
+// 	log.Fatalln("Config error, GM_ALLOWED_HOSTS must be s string.")
+// }
 
-var signalChannel = make(chan os.Signal, 1) // for trapping SIG_HUB
-
-func sigHandler() {
-	for sig := range signalChannel {
-		if sig == syscall.SIGHUP {
-			readConfig()
-			fmt.Print("Reloading Configuration!\n")
-		} else {
-			os.Exit(0)
-		}
-
+func RunServer(sConfig ServerConfig, backend guerrilla.Backend) (err error) {
+	server := SmtpdServer{
+		Config: sConfig,
+		sem: make(chan int, sConfig.Max_clients)
 	}
-}
-
-func initialise() {
-
-	// database writing workers
-	SaveMailChan = make(chan *savePayload, mainConfig.Save_workers_size)
-
-	// write out our PID
-	if f, err := os.Create(mainConfig.Pid_file); err == nil {
-		defer f.Close()
-		if _, err := f.WriteString(strconv.Itoa(os.Getpid())); err == nil {
-			f.Sync()
-		}
-	}
-	// handle SIGHUP for reloading the configuration while running
-	signal.Notify(signalChannel, syscall.SIGHUP)
-
-	return
-}
-
-func runServer(sConfig ServerConfig) (err error) {
-	server := SmtpdServer{Config: sConfig, sem: make(chan int, sConfig.Max_clients)}
 
 	// setup logging
 	server.openLog()
 
 	// configure ssl
-	if (sConfig.Tls_always_on || sConfig.Start_tls_on) {
+	if sConfig.Tls_always_on || sConfig.Start_tls_on {
 		cert, err := tls.LoadX509KeyPair(sConfig.Public_key_file, sConfig.Private_key_file)
 		if err != nil {
 			server.logln(2, fmt.Sprintf("There was a problem with loading the certificate: %s", err))
@@ -83,7 +59,6 @@ func runServer(sConfig ServerConfig) (err error) {
 		}
 		server.tlsConfig.Rand = rand.Reader
 	}
-
 
 	// configure timeout
 	server.timeout = time.Duration(sConfig.Timeout)

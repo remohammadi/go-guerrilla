@@ -1,5 +1,5 @@
 GIT ?= git
-GO_VARS ?= GOOS=linux GOARCH=amd64
+GO_VARS ?= 
 GO ?= go
 COMMIT := $(shell $(GIT) rev-parse HEAD)
 VERSION ?= $(shell $(GIT) describe --tags ${COMMIT} 2> /dev/null || echo "$(COMMIT)")

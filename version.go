@@ -6,7 +6,9 @@ var (
 	Version   string
 	Commit    string
 	BuildTime string
-	StartTime time.Time
+
+	StartTime      time.Time
+	ConfigLoadTime time.Time
 )
 
 func init() {
