@@ -2,9 +2,10 @@ package backends
 
 import (
 	"fmt"
-	"log"
 	"strconv"
 	"time"
+
+	log "github.com/Sirupsen/logrus"
 
 	"github.com/garyburd/redigo/redis"
 	"github.com/ziutek/mymysql/autorc"
@@ -66,7 +67,7 @@ func (g *GuerrillaDBAndRedisBackend) saveMail() {
 	var to, recipient, body string
 	var err error
 
-	var redis_err error
+	var redisErr error
 	var length int
 	redisClient := &redisClient{}
 	db := autorc.New(
@@ -80,14 +81,14 @@ func (g *GuerrillaDBAndRedisBackend) saveMail() {
 	sql := "INSERT INTO " + g.config.MysqlTable + " "
 	sql += "(`date`, `to`, `from`, `subject`, `body`, `charset`, `mail`, `spam_score`, `hash`, `content_type`, `recipient`, `has_attach`, `ip_addr`, `return_path`, `is_tls`)"
 	sql += " values (NOW(), ?, ?, ?, ? , 'UTF-8' , ?, 0, ?, '', ?, 0, ?, ?, ?)"
-	ins, sql_err := db.Prepare(sql)
-	if sql_err != nil {
-		log.Fatalf(fmt.Sprintf("Sql statement incorrect: %s\n", sql_err))
+	ins, sqlErr := db.Prepare(sql)
+	if sqlErr != nil {
+		log.WithError(sqlErr).Fatalf("failed while db.Prepare(INSERT...)")
 	}
 	sql = "UPDATE gm2_setting SET `setting_value` = `setting_value`+1 WHERE `setting_name`='received_emails' LIMIT 1"
-	incr, sql_err := db.Prepare(sql)
-	if sql_err != nil {
-		log.Fatalf(fmt.Sprintf("Sql statement incorrect: %s\n", sql_err))
+	incr, sqlErr := db.Prepare(sql)
+	if sqlErr != nil {
+		log.WithError(sqlErr).Fatalf("failed while db.Prepare(UPDATE...)")
 	}
 
 	//  receives values from the channel repeatedly until it is closed.
@@ -120,15 +121,15 @@ func (g *GuerrillaDBAndRedisBackend) saveMail() {
 		// compress to save space
 		payload.client.data = compress(&add_head, &payload.client.data)
 		body = "gzencode"
-		redis_err = redisClient.redisConnection()
-		if redis_err == nil {
+		redisErr = redisClient.redisConnection()
+		if redisErr == nil {
 			_, do_err := redisClient.conn.Do("SETEX", payload.client.hash, mainConfig.RedisExpireSeconds, payload.client.data)
 			if do_err == nil {
 				payload.client.data = ""
 				body = "redis"
 			}
 		} else {
-			payload.server.logln(1, fmt.Sprintf("redis: %v", redis_err))
+			payload.server.logln(1, fmt.Sprintf("redis: %v", redisErr))
 		}
 		// bind data to cursor
 		ins.Bind(
@@ -160,7 +161,6 @@ func (g *GuerrillaDBAndRedisBackend) saveMail() {
 }
 
 func (c *redisClient) redisConnection() (err error) {
-
 	if c.count == 0 {
 		c.conn, err = redis.Dial("tcp", mainConfig.RedisInterface)
 		if err != nil {
@@ -173,7 +173,6 @@ func (c *redisClient) redisConnection() (err error) {
 
 // test database connection settings
 func (g *GuerrillaDBAndRedisBackend) testDbConnections() (err error) {
-
 	db := autorc.New(
 		"tcp",
 		"",
